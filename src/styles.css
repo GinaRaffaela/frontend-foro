@@ -1,0 +1,144 @@
+:root {
+  --forum-primary: #1e3a8a;
+  --forum-primary-hover: #172554;
+  --forum-accent: #f59e0b;
+  --forum-surface: #f4f6fb;
+  --forum-card: #ffffff;
+  --forum-border: #e2e8f0;
+  --forum-text: #0f172a;
+  --forum-muted: #64748b;
+  --forum-danger: #dc2626;
+  --forum-success: #16a34a;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--forum-surface);
+  color: var(--forum-text);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1, h2, h3, h4, h5, h6, .navbar-brand {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.bg-forum-surface {
+  background-color: var(--forum-surface);
+}
+
+.bg-forum-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 60%, #2563eb 100%);
+}
+
+.card-forum {
+  background: var(--forum-card);
+  border: 1px solid var(--forum-border);
+  border-radius: 1rem;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.card-forum-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(30, 58, 138, 0.09);
+  border-color: #cbd5e1;
+}
+
+.category-pill {
+  cursor: pointer;
+  border-radius: 0.85rem;
+  border: 1px solid var(--forum-border);
+  background: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.category-pill:hover,
+.category-pill.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+}
+
+.avatar-circle {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.password-rule-list {
+  list-style: none;
+  padding-left: 0;
+  margin-bottom: 0;
+}
+
+.password-rule-item {
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.3rem;
+  transition: color 0.15s ease;
+}
+
+.password-rule-item.rule-ok {
+  color: var(--forum-success);
+  font-weight: 500;
+}
+
+.password-rule-item.rule-pending {
+  color: var(--forum-muted);
+}
+
+.banned-banner {
+  background-color: #fef2f2;
+  border: 1px dashed #ef4444;
+  border-radius: 0.75rem;
+}
+
+/* =====================================================================
+   Adaptación Responsiva para 3+ tamaños de pantalla (Grid 12 Columnas)
+   ===================================================================== */
+
+/* 1. Móvil (< 768px - xs / sm) */
+@media (max-width: 767.98px) {
+  .hero-title {
+    font-size: 1.55rem;
+  }
+  .card-forum {
+    border-radius: 0.85rem;
+  }
+  .responsive-stack-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+  .responsive-stack-actions > .btn {
+    width: 100%;
+  }
+}
+
+/* 2. Tablet (768px a 991.98px - md) */
+@media (min-width: 768px) and (max-width: 991.98px) {
+  .hero-title {
+    font-size: 1.95rem;
+  }
+}
+
+/* 3. Escritorio Estándar y Amplio (>= 992px - lg / xl / xxl) */
+@media (min-width: 992px) {
+  .hero-title {
+    font-size: 2.35rem;
+  }
+  .sticky-sidebar {
+    position: sticky;
+    top: 5.5rem;
+  }
+}
