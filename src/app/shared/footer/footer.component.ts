@@ -34,19 +34,6 @@ import { ForumStoreService } from '../../core/services/forum-store.service';
             </div>
           </div>
 
-          <div class="col-12 col-lg-3 text-lg-end">
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary rounded-pill"
-              (click)="onResetDemo()"
-              title="Restaura las 5 categorías, 3 usuarios y temas demo originales"
-            >
-              <i class="bi bi-arrow-counterclockwise me-1"></i>Restaurar Datos Demo
-            </button>
-            <div class="text-muted small mt-2" *ngIf="resetNotice">
-              <span class="text-success fw-semibold"><i class="bi bi-check-circle me-1"></i>Datos demo restaurados</span>
-            </div>
-          </div>
         </div>
       </div>
     </footer>
@@ -54,11 +41,4 @@ import { ForumStoreService } from '../../core/services/forum-store.service';
 })
 export class FooterComponent {
   private readonly store = inject(ForumStoreService);
-  resetNotice = false;
-
-  onResetDemo(): void {
-    this.store.resetToDemoData();
-    this.resetNotice = true;
-    setTimeout(() => (this.resetNotice = false), 3000);
-  }
 }

@@ -340,9 +340,14 @@ export class TopicDetailComponent implements OnInit {
   });
 
   ngOnInit(): void {
+    const id = Number(this.route.snapshot.paramMap.get('id'));
     this.store.users$.subscribe(u => (this.users = u));
     this.store.currentUser$.subscribe(u => (this.currentUser = u));
-    this.loadTopicData();
+    this.store.topics$.subscribe(() => this.loadTopicData());
+    this.store.comments$.subscribe(() => this.loadTopicData());
+    if (id) {
+      this.store.refreshTopicCommentsFromApi(id);
+    }
   }
 
   loadTopicData(): void {

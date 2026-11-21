@@ -292,7 +292,7 @@ export class RegisterComponent {
     return !!(control && control.valid && (control.dirty || control.touched));
   }
 
-  onSubmit(): void {
+  async onSubmit(): Promise<void> {
     this.submitted = true;
     this.errorMessage = '';
 
@@ -302,7 +302,7 @@ export class RegisterComponent {
     }
 
     const raw = this.registerForm.getRawValue();
-    const res = this.store.registerUser({
+    const res = await this.store.registerUserWithApi({
       displayName: raw.displayName,
       email: raw.email,
       password: raw.password,

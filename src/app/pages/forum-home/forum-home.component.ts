@@ -11,32 +11,25 @@ import { ForumStoreService } from '../../core/services/forum-store.service';
   imports: [CommonModule, FormsModule, RouterLink],
   template: `
     <!-- Hero Banner Responsivo -->
-    <section class="bg-forum-gradient text-white py-4 py-lg-5 mb-4">
+    <section class="bg-forum-gradient text-white py-5 py-lg-6 mb-5">
       <div class="container">
-        <div class="row align-items-center g-4">
-          <div class="col-12 col-lg-8">
-            <span class="badge bg-warning text-dark fw-semibold px-3 py-2 rounded-pill mb-2">
+        <div class="row justify-content-center text-center">
+          <div class="col-12 col-lg-10">
+            <span class="badge bg-warning text-dark fw-semibold px-3 py-2 rounded-pill mb-3 d-inline-block">
               <i class="bi bi-stars me-1"></i>Comunidad de Debate y Conocimiento
             </span>
-            <h1 class="hero-title fw-bold mb-2">Sistema de Foros en Línea ForoDuoc</h1>
-            <p class="text-white-50 mb-0">
+            <h1 class="hero-title fw-bold mb-3" style="font-size: clamp(2rem, 5vw, 3rem);">Sistema de Foros en Línea ForoDuoc</h1>
+            <p class="text-white-50 mb-4" style="font-size: 1.1rem; max-width: 800px; margin: 0 auto;">
               Explora nuestras {{ categories.length }} categorías temáticas, participa en discusiones técnicas y comparte con la comunidad.
             </p>
-          </div>
-          <div class="col-12 col-lg-4 text-lg-end">
-            <div class="d-flex flex-wrap justify-content-lg-end gap-2 responsive-stack-actions">
+            <div class="d-flex justify-content-center gap-2">
               <a
-                *ngIf="currentUser; else loginPromptBtn"
+                *ngIf="currentUser"
                 routerLink="/foro/nuevo-tema"
-                class="btn btn-warning text-dark fw-bold px-4 py-2 rounded-pill shadow-sm"
+                class="btn btn-warning text-dark fw-bold px-5 py-2 rounded-pill shadow-sm"
               >
                 <i class="bi bi-plus-lg me-2"></i>Publicar Nuevo Tema
               </a>
-              <ng-template #loginPromptBtn>
-                <a routerLink="/login" class="btn btn-warning text-dark fw-bold px-4 py-2 rounded-pill">
-                  <i class="bi bi-box-arrow-in-right me-2"></i>Inicia Sesión para Publicar
-                </a>
-              </ng-template>
             </div>
           </div>
         </div>

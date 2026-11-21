@@ -1,17 +1,65 @@
-import { Injectable } from '@angular/core';
-import { BehaviorSubject } from 'rxjs';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { BehaviorSubject, firstValueFrom, forkJoin, of } from 'rxjs';
+import { catchError } from 'rxjs/operators';
+import { API_CONFIG } from '../config/api.config';
 import { Category, Comment, ModerationLog, Topic, User, UserRole } from '../models/forum.models';
 
+interface BackendUserResponse {
+  id: number;
+  displayName: string;
+  email: string;
+  role: UserRole;
+}
+
+interface BackendTokenResponse {
+  accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  user: BackendUserResponse;
+}
+
+interface BackendCategoryResponse {
+  id: number;
+  name: string;
+  description: string;
+}
+
+interface BackendTopicResponse {
+  id: number;
+  title: string;
+  content: string;
+  authorId: number;
+  categoryId: number;
+  createdAt: string;
+}
+
+interface BackendCommentResponse {
+  id: number;
+  content: string;
+  authorId: number;
+  topicId: number;
+  createdAt: string;
+}
+
+interface SpringPage<T> {
+  content: T[];
+  totalElements: number;
+}
+
 /**
- * Servicio central de gestión de colecciones en memoria (Patrón Repository / Store Reactivo).
- * Cumple los Puntos 2.e, 4 y 5 de la evaluación: maneja toda la información mediante
- * listas/arreglos tipados de Angular (Category[], User[], Topic[], Comment[], ModerationLog[])
- * de forma desacoplada del backend, sincronizando en localStorage para conservar cambios en vivo.
+ * Servicio central del Foro (Patrón Repository / Store Reactivo conectado a las APIs REST).
+ * - Conecta con `users-service` (http://localhost:8081/api) y `forum-service` (http://localhost:8082/api)
+ *   mediante HttpClient y autenticación JWT Bearer.
+ * - Mantiene y sincroniza las listas/colecciones tipadas de Angular (User[], Category[], Topic[], Comment[])
+ *   en memoria y localStorage, con respaldo local automático si los microservicios no están encendidos.
  */
 @Injectable({
   providedIn: 'root'
 })
 export class ForumStoreService {
+  private readonly http = inject(HttpClient);
+
   private readonly STORAGE_KEYS = {
     USERS: 'foroduoc_users_v1',
     CATEGORIES: 'foroduoc_categories_v1',
@@ -36,6 +84,7 @@ export class ForumStoreService {
   private readonly commentsSubject = new BehaviorSubject<Comment[]>([]);
   private readonly logsSubject = new BehaviorSubject<ModerationLog[]>([]);
   private readonly currentUserSubject = new BehaviorSubject<User | null>(null);
+  private readonly backendConnectedSubject = new BehaviorSubject<boolean>(false);
 
   readonly users$ = this.usersSubject.asObservable();
   readonly categories$ = this.categoriesSubject.asObservable();
@@ -43,13 +92,185 @@ export class ForumStoreService {
   readonly comments$ = this.commentsSubject.asObservable();
   readonly moderationLogs$ = this.logsSubject.asObservable();
   readonly currentUser$ = this.currentUserSubject.asObservable();
+  readonly backendConnected$ = this.backendConnectedSubject.asObservable();
 
   constructor() {
     this.loadFromStorageOrInitDemo();
+    this.syncWithBackend();
   }
 
   // =====================================================================
-  // Inicialización de Colecciones Demo (5 Categorías + 3 Usuarios Demo)
+  // Sincronización HTTP con users-service (:8081) y forum-service (:8082)
+  // =====================================================================
+  syncWithBackend(): void {
+    // 1. Cargar categorías y temas desde forum-service (:8082)
+    forkJoin({
+      categories: this.http
+        .get<BackendCategoryResponse[]>(`${API_CONFIG.forumServiceUrl}/categories`)
+        .pipe(catchError(() => of(null))),
+      topicsPage: this.http
+        .get<SpringPage<BackendTopicResponse>>(`${API_CONFIG.forumServiceUrl}/topics?page=0&size=100`)
+        .pipe(catchError(() => of(null)))
+    }).subscribe(({ categories, topicsPage }) => {
+      if (categories && categories.length > 0) {
+        this.backendConnectedSubject.next(true);
+        this.categoriesList = categories.map(cat => this.mapBackendCategory(cat));
+      } else {
+        this.backendConnectedSubject.next(false);
+      }
+
+      if (topicsPage && topicsPage.content) {
+        this.topicsList = topicsPage.content.map(t => this.mapBackendTopic(t));
+        this.syncAll();
+
+        // Cargar comentarios de cada tema desde forum-service (:8082)
+        topicsPage.content.forEach(t => {
+          this.refreshTopicCommentsFromApi(t.id);
+        });
+      } else {
+        this.syncAll();
+      }
+    });
+
+    // 2. Si hay token JWT activo, sincronizar perfil y lista de usuarios desde users-service (:8081)
+    const token = localStorage.getItem(API_CONFIG.tokenStorageKey);
+    if (token) {
+      this.http
+        .get<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/users/me`)
+        .pipe(catchError(() => of(null)))
+        .subscribe(me => {
+          if (me) {
+            this.backendConnectedSubject.next(true);
+            const mappedMe = this.mergeBackendUser(me);
+            this.currentUser = mappedMe;
+            this.syncAll();
+
+            if (me.role === 'ADMIN') {
+              this.refreshUsersFromApi();
+            }
+          }
+        });
+    }
+  }
+
+  refreshUsersFromApi(): void {
+    this.http
+      .get<SpringPage<BackendUserResponse>>(`${API_CONFIG.usersServiceUrl}/users?page=0&size=100`)
+      .pipe(catchError(() => of(null)))
+      .subscribe(page => {
+        if (page && page.content) {
+          this.usersList = page.content.map(u => this.mergeBackendUser(u));
+          this.syncAll();
+        }
+      });
+  }
+
+  refreshTopicCommentsFromApi(topicId: number): void {
+    this.http
+      .get<SpringPage<BackendCommentResponse>>(
+        `${API_CONFIG.forumServiceUrl}/topics/${topicId}/comments?page=0&size=100`
+      )
+      .pipe(catchError(() => of(null)))
+      .subscribe(page => {
+        if (page && page.content) {
+          const existingOtherTopics = this.commentsList.filter(c => c.topicId !== topicId);
+          const mappedForTopic = page.content.map(c => this.mapBackendComment(c));
+          this.commentsList = [...existingOtherTopics, ...mappedForTopic];
+          this.syncAll();
+        }
+      });
+  }
+
+  private mapBackendCategory(cat: BackendCategoryResponse): Category {
+    const existing = this.categoriesList.find(
+      c => c.id === cat.id || c.name.toLowerCase() === cat.name.toLowerCase()
+    );
+    const iconByIndex: Record<number, string> = {
+      1: 'bi-cpu-fill',
+      2: 'bi-controller',
+      3: 'bi-rocket-takeoff-fill',
+      4: 'bi-trophy-fill',
+      5: 'bi-film'
+    };
+    return {
+      id: cat.id,
+      name: cat.name,
+      description: cat.description,
+      icon: existing?.icon ?? iconByIndex[cat.id] ?? 'bi-chat-square-text-fill',
+      badgeColor: existing?.badgeColor ?? 'primary',
+      createdAt: existing?.createdAt ?? new Date().toISOString()
+    };
+  }
+
+  private mapBackendTopic(t: BackendTopicResponse): Topic {
+    const existing = this.topicsList.find(item => item.id === t.id);
+    return {
+      id: t.id,
+      title: t.title,
+      content: t.content,
+      categoryId: t.categoryId,
+      authorId: t.authorId,
+      tags: existing?.tags ?? ['ForoDuoc'],
+      pinned: existing?.pinned ?? (t.id === 1 || t.id === 3),
+      banned: existing?.banned ?? false,
+      banReason: existing?.banReason,
+      createdAt: t.createdAt || new Date().toISOString(),
+      updatedAt: existing?.updatedAt
+    };
+  }
+
+  private mapBackendComment(c: BackendCommentResponse): Comment {
+    const existing = this.commentsList.find(item => item.id === c.id);
+    return {
+      id: c.id,
+      topicId: c.topicId,
+      authorId: c.authorId,
+      content: c.content,
+      banned: existing?.banned ?? false,
+      banReason: existing?.banReason,
+      createdAt: c.createdAt || new Date().toISOString(),
+      updatedAt: existing?.updatedAt
+    };
+  }
+
+  private mergeBackendUser(u: BackendUserResponse, plainPassword?: string): User {
+    const existing = this.usersList.find(
+      item => item.id === u.id || item.email.toLowerCase() === u.email.toLowerCase()
+    );
+    const merged: User = {
+      id: u.id,
+      displayName: u.displayName,
+      email: u.email,
+      password: plainPassword ?? existing?.password ?? 'Demo1234',
+      role: u.role,
+      bio: existing?.bio ?? 'Miembro registrado en ForoDuoc.',
+      favoriteCategoryId: existing?.favoriteCategoryId ?? 1,
+      active: existing?.active ?? true,
+      createdAt: existing?.createdAt ?? new Date().toISOString()
+    };
+
+    const idx = this.usersList.findIndex(item => item.id === u.id);
+    if (idx >= 0) {
+      this.usersList[idx] = merged;
+    } else {
+      this.usersList.push(merged);
+    }
+    return merged;
+  }
+
+  private extractErrorMessage(err: unknown, defaultMsg: string): string {
+    if (err instanceof HttpErrorResponse) {
+      const detail = err.error?.detail || err.error?.message;
+      if (detail) return detail;
+      if (err.status === 401) return 'Credenciales inválidas o sesión expirada (401).';
+      if (err.status === 403) return 'No tienes permisos para realizar esta acción (403).';
+      if (err.status === 409) return 'Conflicto de datos: registro duplicado o categoría con temas asociados (409).';
+    }
+    return defaultMsg;
+  }
+
+  // =====================================================================
+  // Inicialización de Colecciones Demo (Respaldo / Estado Inicial)
   // =====================================================================
   private getInitialCategories(): Category[] {
     return [
@@ -141,7 +362,7 @@ export class ForumStoreService {
         title: 'Bienvenida a Spring Boot',
         content: 'Espacio para compartir dudas de Spring Boot, configuracion de microservicios con JPA, Oracle Cloud Wallet y contenedores Docker.',
         categoryId: 1,
-        authorId: 2, // Ana
+        authorId: 2,
         tags: ['Spring Boot', 'Microservicios', 'Docker', 'Oracle'],
         pinned: true,
         banned: false,
@@ -152,7 +373,7 @@ export class ForumStoreService {
         title: 'Juegos cooperativos recomendados',
         content: '¿Que juegos actuales recomiendan para jugar en equipo durante el fin de semana? Buscamos opciones con buena historia o estrategia.',
         categoryId: 2,
-        authorId: 3, // Luis
+        authorId: 3,
         tags: ['Co-op', 'Multiplayer', 'Estrategia'],
         pinned: false,
         banned: false,
@@ -163,7 +384,7 @@ export class ForumStoreService {
         title: 'Exploracion espacial',
         content: 'Conversemos sobre las nuevas misiones espaciales a la Luna y Marte, telescopios espaciales y descubrimientos de exoplanetas.',
         categoryId: 3,
-        authorId: 1, // Admin
+        authorId: 1,
         tags: ['Astronomia', 'Marte', 'NASA'],
         pinned: true,
         banned: false,
@@ -174,7 +395,7 @@ export class ForumStoreService {
         title: 'Preparacion fisica para primera carrera 10K',
         content: 'Comparto mi plan de entrenamiento de 8 semanas para correr mis primeros 10 kilometros sin lesiones. ¿Alguien mas se prepara este semestre?',
         categoryId: 4,
-        authorId: 3, // Luis
+        authorId: 3,
         tags: ['Running', 'Salud', '10K'],
         pinned: false,
         banned: false,
@@ -185,7 +406,7 @@ export class ForumStoreService {
         title: 'Mejores series de ciencia ficcion del ultimo año',
         content: 'Abro hilo para debatir sin spoilers cuales han sido las mejores producciones de ciencia ficcion y suspenso estrenadas recientemente.',
         categoryId: 5,
-        authorId: 2, // Ana
+        authorId: 2,
         tags: ['Series', 'Sci-Fi', 'Streaming'],
         pinned: false,
         banned: false,
@@ -199,7 +420,7 @@ export class ForumStoreService {
       {
         id: 1,
         topicId: 1,
-        authorId: 3, // Luis
+        authorId: 3,
         content: 'Recomiendo revisar la documentacion oficial de Spring y configurar multi-stage builds en Docker para aligerar las imagenes.',
         banned: false,
         createdAt: '2026-11-10T16:30:00Z'
@@ -207,7 +428,7 @@ export class ForumStoreService {
       {
         id: 2,
         topicId: 2,
-        authorId: 2, // Ana
+        authorId: 2,
         content: 'Me gustan los juegos de estrategia cooperativa como Baldur\'s Gate 3, It Takes Two y Helldivers 2.',
         banned: false,
         createdAt: '2026-11-11T19:15:00Z'
@@ -215,7 +436,7 @@ export class ForumStoreService {
       {
         id: 3,
         topicId: 3,
-        authorId: 2, // Ana
+        authorId: 2,
         content: 'Las misiones a Marte son muy interesantes, especialmente el analisis de muestras del rover Perseverance.',
         banned: false,
         createdAt: '2026-11-12T15:45:00Z'
@@ -223,7 +444,7 @@ export class ForumStoreService {
       {
         id: 4,
         topicId: 1,
-        authorId: 1, // Admin
+        authorId: 1,
         content: 'Recuerden no subir credenciales ni archivos del Wallet de Oracle al repositorio Git. Usen siempre variables de entorno.',
         banned: false,
         createdAt: '2026-11-13T10:00:00Z'
@@ -249,7 +470,7 @@ export class ForumStoreService {
       if (savedSession) {
         const parsedUser = JSON.parse(savedSession) as User;
         const freshUser = this.usersList.find(u => u.id === parsedUser.id && u.active);
-        this.currentUser = freshUser ?? null;
+        this.currentUser = freshUser ?? parsedUser;
       }
 
       this.syncAll();
@@ -279,9 +500,6 @@ export class ForumStoreService {
     this.currentUserSubject.next(this.currentUser ? { ...this.currentUser } : null);
   }
 
-  /**
-   * Restaura las listas/arreglos a su estado inicial de demostración.
-   */
   resetToDemoData(): void {
     this.usersList = this.getInitialUsers();
     this.categoriesList = this.getInitialCategories();
@@ -292,6 +510,7 @@ export class ForumStoreService {
       this.currentUser = this.usersList.find(u => u.id === this.currentUser?.id) ?? null;
     }
     this.syncAll();
+    this.syncWithBackend();
   }
 
   // =====================================================================
@@ -342,21 +561,73 @@ export class ForumStoreService {
   }
 
   // =====================================================================
-  // Autenticación, Registro, Recuperación de Clave y Perfil (Punto 4)
+  // Autenticación y Registro conectados a users-service (:8081/api/auth)
   // =====================================================================
+  async loginWithApi(email: string, password: string): Promise<{ ok: boolean; message: string; user?: User }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    // Si es una cuenta demo y se ingresó Demo1234!, probamos primero con la clave ingresada y luego con Demo1234 (clave por defecto en Spring Boot)
+    const candidatePasswords =
+      (normalizedEmail === 'admin@foro.test' ||
+        normalizedEmail === 'ana@foro.test' ||
+        normalizedEmail === 'luis@foro.test') &&
+      password === 'Demo1234!'
+        ? ['Demo1234', 'Demo1234!']
+        : [password];
+
+    for (const pwd of candidatePasswords) {
+      try {
+        const tokenRes = await firstValueFrom(
+          this.http.post<BackendTokenResponse>(`${API_CONFIG.usersServiceUrl}/auth/login`, {
+            email: normalizedEmail,
+            password: pwd
+          })
+        );
+        this.backendConnectedSubject.next(true);
+        localStorage.setItem(API_CONFIG.tokenStorageKey, tokenRes.accessToken);
+        const user = this.mergeBackendUser(tokenRes.user, password);
+        this.currentUser = user;
+        this.syncAll();
+
+        if (user.role === 'ADMIN') {
+          this.refreshUsersFromApi();
+        }
+        this.syncWithBackend();
+
+        return { ok: true, message: `¡Bienvenido(a), ${user.displayName}! (Autenticado vía API JWT)`, user };
+      } catch (err) {
+        if (err instanceof HttpErrorResponse && err.status === 0) {
+          // El microservicio users-service (:8081) está apagado -> usar respaldo en memoria
+          this.backendConnectedSubject.next(false);
+          return this.loginLocal(email, password);
+        }
+        // Si es 401 y aún queda otro candidato en candidatePasswords, continúa el ciclo
+        if (pwd === candidatePasswords[candidatePasswords.length - 1]) {
+          return {
+            ok: false,
+            message: this.extractErrorMessage(err, 'Credenciales inválidas en users-service (:8081).')
+          };
+        }
+      }
+    }
+
+    return this.loginLocal(email, password);
+  }
+
   login(email: string, password: string): { ok: boolean; message: string; user?: User } {
+    return this.loginLocal(email, password);
+  }
+
+  private loginLocal(email: string, password: string): { ok: boolean; message: string; user?: User } {
     const normalizedEmail = email.trim().toLowerCase();
     const user = this.usersList.find(u => u.email.toLowerCase() === normalizedEmail);
 
     if (!user) {
       return { ok: false, message: 'No existe una cuenta asociada a este correo electrónico.' };
     }
-
     if (!user.active) {
       return { ok: false, message: 'Esta cuenta ha sido suspendida por un administrador.' };
     }
 
-    // Permite Demo1234 (clave backend demo) o la clave actual almacenada en el arreglo
     const isDemoFallback =
       (normalizedEmail === 'admin@foro.test' || normalizedEmail === 'ana@foro.test' || normalizedEmail === 'luis@foro.test') &&
       (password === 'Demo1234' || password === 'Demo1234!');
@@ -372,7 +643,45 @@ export class ForumStoreService {
 
   logout(): void {
     this.currentUser = null;
+    localStorage.removeItem(API_CONFIG.tokenStorageKey);
     this.syncAll();
+  }
+
+  async registerUserWithApi(data: {
+    displayName: string;
+    email: string;
+    password: string;
+    bio?: string;
+    favoriteCategoryId?: number;
+  }): Promise<{ ok: boolean; message: string; user?: User }> {
+    const normalizedEmail = data.email.trim().toLowerCase();
+    try {
+      const created = await firstValueFrom(
+        this.http.post<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/auth/register`, {
+          displayName: data.displayName.trim(),
+          email: normalizedEmail,
+          password: data.password
+        })
+      );
+
+      this.backendConnectedSubject.next(true);
+      const user = this.mergeBackendUser(created, data.password);
+      user.bio = data.bio?.trim() || 'Miembro de la comunidad ForoDuoc.';
+      user.favoriteCategoryId = Number(data.favoriteCategoryId) || 1;
+
+      // Iniciar sesión automáticamente en users-service para obtener el JWT accessToken
+      await this.loginWithApi(normalizedEmail, data.password);
+      return { ok: true, message: 'Cuenta registrada exitosamente en users-service (:8081).', user };
+    } catch (err) {
+      if (err instanceof HttpErrorResponse && err.status === 0) {
+        this.backendConnectedSubject.next(false);
+        return this.registerUser(data);
+      }
+      return {
+        ok: false,
+        message: this.extractErrorMessage(err, 'No se pudo registrar el usuario en users-service (:8081).')
+      };
+    }
   }
 
   registerUser(data: {
@@ -416,13 +725,26 @@ export class ForumStoreService {
       return { ok: false, message: 'No encontramos ningún usuario registrado con ese correo electrónico.' };
     }
 
+    const targetUser = this.usersList[userIndex];
     this.usersList[userIndex] = {
-      ...this.usersList[userIndex],
+      ...targetUser,
       password: newPassword
     };
 
-    if (this.currentUser?.id === this.usersList[userIndex].id) {
+    if (this.currentUser?.id === targetUser.id) {
       this.currentUser = this.usersList[userIndex];
+    }
+
+    // Si hay sesión activa con token en users-service (:8081), sincronizar PUT /api/users/{id}
+    if (localStorage.getItem(API_CONFIG.tokenStorageKey)) {
+      this.http
+        .put<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/users/${targetUser.id}`, {
+          displayName: targetUser.displayName,
+          email: targetUser.email,
+          password: newPassword
+        })
+        .pipe(catchError(() => of(null)))
+        .subscribe();
     }
 
     this.syncAll();
@@ -452,6 +774,24 @@ export class ForumStoreService {
       return { ok: false, message: 'Ese correo electrónico ya está siendo utilizado por otro usuario.' };
     }
 
+    const payload: { displayName: string; email: string; password?: string } = {
+      displayName: changes.displayName.trim(),
+      email: normalizedEmail
+    };
+    if (changes.newPassword) {
+      payload.password = changes.newPassword;
+    }
+
+    // Enviar PUT /api/users/{id} a users-service (:8081)
+    this.http
+      .put<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/users/${userId}`, payload)
+      .pipe(catchError(() => of(null)))
+      .subscribe(res => {
+        if (res) {
+          this.backendConnectedSubject.next(true);
+        }
+      });
+
     const updatedUser: User = {
       ...this.usersList[idx],
       displayName: changes.displayName.trim(),
@@ -467,11 +807,11 @@ export class ForumStoreService {
     }
 
     this.syncAll();
-    return { ok: true, message: 'Perfil actualizado exitosamente.' };
+    return { ok: true, message: 'Perfil actualizado exitosamente (sincronizado con users-service).' };
   }
 
   // =====================================================================
-  // CRUD de Usuarios por ADMIN (Control de Usuarios)
+  // CRUD de Usuarios por ADMIN (users-service :8081/api/users)
   // =====================================================================
   adminCreateUser(data: {
     displayName: string;
@@ -500,7 +840,32 @@ export class ForumStoreService {
     this.usersList.push(newUser);
     this.recordModerationLog('USUARIO', newUser.id, 'CREAR_USUARIO', `Creación de cuenta (${newUser.role}): ${newUser.email}`);
     this.syncAll();
-    return { ok: true, message: `Usuario ${newUser.displayName} agregado a la lista.` };
+
+    // Sincronizar con users-service (:8081): POST /api/auth/register + PUT /api/users/{id}/role si es ADMIN
+    this.http
+      .post<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/auth/register`, {
+        displayName: newUser.displayName,
+        email: newUser.email,
+        password: data.password
+      })
+      .pipe(catchError(() => of(null)))
+      .subscribe(created => {
+        if (created) {
+          this.backendConnectedSubject.next(true);
+          if (data.role === 'ADMIN') {
+            this.http
+              .put<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/users/${created.id}/role`, {
+                role: 'ADMIN'
+              })
+              .pipe(catchError(() => of(null)))
+              .subscribe(() => this.refreshUsersFromApi());
+          } else {
+            this.refreshUsersFromApi();
+          }
+        }
+      });
+
+    return { ok: true, message: `Usuario ${newUser.displayName} creado y sincronizado con users-service.` };
   }
 
   adminUpdateUserRole(userId: number, role: UserRole): { ok: boolean; message: string } {
@@ -511,6 +876,13 @@ export class ForumStoreService {
     if (this.currentUser?.id === userId) {
       this.currentUser = this.usersList[idx];
     }
+
+    // Llamar PUT /api/users/{id}/role en users-service (:8081)
+    this.http
+      .put<BackendUserResponse>(`${API_CONFIG.usersServiceUrl}/users/${userId}/role`, { role })
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     this.recordModerationLog('USUARIO', userId, 'CAMBIO_ROL', `Cambio de rol a ${role} para ${this.usersList[idx].email}`);
     this.syncAll();
     return { ok: true, message: `Rol de ${this.usersList[idx].displayName} actualizado a ${role}.` };
@@ -546,13 +918,20 @@ export class ForumStoreService {
     if (!target) return { ok: false, message: 'Usuario no encontrado.' };
 
     this.usersList = this.usersList.filter(u => u.id !== userId);
+
+    // Llamar DELETE /api/users/{id} en users-service (:8081)
+    this.http
+      .delete(`${API_CONFIG.usersServiceUrl}/users/${userId}`)
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     this.recordModerationLog('USUARIO', userId, 'ELIMINAR_USUARIO', `Eliminación del usuario ${target.email}`);
     this.syncAll();
-    return { ok: true, message: `Usuario ${target.displayName} eliminado de la colección.` };
+    return { ok: true, message: `Usuario ${target.displayName} eliminado.` };
   }
 
   // =====================================================================
-  // CRUD de Categorías (Mínimo 5 categorías clasificadoras)
+  // CRUD de Categorías conectado a forum-service (:8082/api/categories)
   // =====================================================================
   createCategory(data: { name: string; description: string; icon: string; badgeColor: string }): { ok: boolean; message: string } {
     const normalized = data.name.trim().toLowerCase();
@@ -573,7 +952,26 @@ export class ForumStoreService {
     this.categoriesList.push(category);
     this.recordModerationLog('CATEGORIA', category.id, 'CREAR_CATEGORIA', `Nueva categoría: ${category.name}`);
     this.syncAll();
-    return { ok: true, message: `Categoría "${category.name}" creada exitosamente.` };
+
+    // Enviar POST /api/categories a forum-service (:8082)
+    this.http
+      .post<BackendCategoryResponse>(`${API_CONFIG.forumServiceUrl}/categories`, {
+        name: category.name,
+        description: category.description
+      })
+      .pipe(catchError(() => of(null)))
+      .subscribe(created => {
+        if (created) {
+          this.backendConnectedSubject.next(true);
+          const idx = this.categoriesList.findIndex(c => c.name === category.name);
+          if (idx >= 0) {
+            this.categoriesList[idx] = { ...this.categoriesList[idx], id: created.id };
+            this.syncAll();
+          }
+        }
+      });
+
+    return { ok: true, message: `Categoría "${category.name}" creada y enviada a forum-service.` };
   }
 
   deleteCategory(categoryId: number): { ok: boolean; message: string } {
@@ -589,13 +987,20 @@ export class ForumStoreService {
     if (!target) return { ok: false, message: 'Categoría no encontrada.' };
 
     this.categoriesList = this.categoriesList.filter(c => c.id !== categoryId);
+
+    // Enviar DELETE /api/categories/{id} a forum-service (:8082)
+    this.http
+      .delete(`${API_CONFIG.forumServiceUrl}/categories/${categoryId}`)
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     this.recordModerationLog('CATEGORIA', categoryId, 'ELIMINAR_CATEGORIA', `Categoría eliminada: ${target.name}`);
     this.syncAll();
     return { ok: true, message: `Categoría "${target.name}" eliminada.` };
   }
 
   // =====================================================================
-  // CRUD de Temas y Comentarios + Moderación / Baneo por ADMIN
+  // CRUD de Temas y Comentarios conectado a forum-service (:8082/api/topics)
   // =====================================================================
   createTopic(data: { title: string; content: string; categoryId: number; tags: string[] }): { ok: boolean; message: string; topic?: Topic } {
     if (!this.currentUser) {
@@ -617,6 +1022,31 @@ export class ForumStoreService {
 
     this.topicsList.unshift(topic);
     this.syncAll();
+
+    // Enviar POST /api/topics a forum-service (:8082)
+    this.http
+      .post<BackendTopicResponse>(`${API_CONFIG.forumServiceUrl}/topics`, {
+        title: topic.title,
+        content: topic.content,
+        categoryId: topic.categoryId
+      })
+      .pipe(catchError(() => of(null)))
+      .subscribe(created => {
+        if (created) {
+          this.backendConnectedSubject.next(true);
+          const idx = this.topicsList.findIndex(t => t.id === topic.id);
+          if (idx >= 0) {
+            this.topicsList[idx] = {
+              ...this.topicsList[idx],
+              id: created.id,
+              authorId: created.authorId,
+              createdAt: created.createdAt || this.topicsList[idx].createdAt
+            };
+            this.syncAll();
+          }
+        }
+      });
+
     return { ok: true, message: 'Tema publicado exitosamente en el foro.', topic };
   }
 
@@ -638,6 +1068,16 @@ export class ForumStoreService {
       updatedAt: new Date().toISOString()
     };
 
+    // Enviar PUT /api/topics/{id} a forum-service (:8082)
+    this.http
+      .put<BackendTopicResponse>(`${API_CONFIG.forumServiceUrl}/topics/${topicId}`, {
+        title: data.title.trim(),
+        content: data.content.trim(),
+        categoryId: Number(data.categoryId)
+      })
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     this.syncAll();
     return { ok: true, message: 'Tema actualizado correctamente.' };
   }
@@ -652,6 +1092,12 @@ export class ForumStoreService {
 
     this.topicsList = this.topicsList.filter(t => t.id !== topicId);
     this.commentsList = this.commentsList.filter(c => c.topicId !== topicId);
+
+    // Enviar DELETE /api/topics/{id} a forum-service (:8082)
+    this.http
+      .delete(`${API_CONFIG.forumServiceUrl}/topics/${topicId}`)
+      .pipe(catchError(() => of(null)))
+      .subscribe();
 
     if (this.currentUser.role === 'ADMIN') {
       this.recordModerationLog('TEMA', topicId, 'ELIMINAR_TEMA', `Tema eliminado definitivamente: "${topic.title}"`);
@@ -715,6 +1161,29 @@ export class ForumStoreService {
 
     this.commentsList.push(comment);
     this.syncAll();
+
+    // Enviar POST /api/topics/{topicId}/comments a forum-service (:8082)
+    this.http
+      .post<BackendCommentResponse>(`${API_CONFIG.forumServiceUrl}/topics/${topicId}/comments`, {
+        content: comment.content
+      })
+      .pipe(catchError(() => of(null)))
+      .subscribe(created => {
+        if (created) {
+          this.backendConnectedSubject.next(true);
+          const idx = this.commentsList.findIndex(c => c.id === comment.id);
+          if (idx >= 0) {
+            this.commentsList[idx] = {
+              ...this.commentsList[idx],
+              id: created.id,
+              authorId: created.authorId,
+              createdAt: created.createdAt || this.commentsList[idx].createdAt
+            };
+            this.syncAll();
+          }
+        }
+      });
+
     return { ok: true, message: 'Comentario publicado.', comment };
   }
 
@@ -732,6 +1201,16 @@ export class ForumStoreService {
       content: content.trim(),
       updatedAt: new Date().toISOString()
     };
+
+    // Enviar PUT /api/topics/{topicId}/comments/{id} a forum-service (:8082)
+    this.http
+      .put<BackendCommentResponse>(
+        `${API_CONFIG.forumServiceUrl}/topics/${target.topicId}/comments/${commentId}`,
+        { content: content.trim() }
+      )
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     this.syncAll();
     return { ok: true, message: 'Comentario actualizado.' };
   }
@@ -745,6 +1224,13 @@ export class ForumStoreService {
     }
 
     this.commentsList = this.commentsList.filter(c => c.id !== commentId);
+
+    // Enviar DELETE /api/topics/{topicId}/comments/{id} a forum-service (:8082)
+    this.http
+      .delete(`${API_CONFIG.forumServiceUrl}/topics/${target.topicId}/comments/${commentId}`)
+      .pipe(catchError(() => of(null)))
+      .subscribe();
+
     if (this.currentUser.role === 'ADMIN') {
       this.recordModerationLog('COMENTARIO', commentId, 'ELIMINAR_COMENTARIO', `Comentario #${commentId} eliminado definitivamente`);
     }

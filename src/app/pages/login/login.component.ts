@@ -11,63 +11,8 @@ import { ForumStoreService } from '../../core/services/forum-store.service';
   template: `
     <div class="container py-4 py-lg-5">
       <div class="row justify-content-center align-items-stretch g-4">
-        <!-- Columna informativa (Grid 12: 12 en móvil, 5 en desktop) -->
-        <div class="col-12 col-lg-5 d-flex">
-          <div class="card-forum bg-forum-gradient text-white p-4 p-xl-5 w-100 d-flex flex-column justify-content-between">
-            <div>
-              <span class="badge bg-warning text-dark fw-semibold mb-3 px-3 py-2 rounded-pill">
-                <i class="bi bi-shield-check me-1"></i>Acceso al Sistema de Foros
-              </span>
-              <h2 class="fw-bold mb-3">Bienvenido a ForoDuoc</h2>
-              <p class="text-white-50 mb-4">
-                Participa en las 5 categorías temáticas de nuestra comunidad, publica debates, comenta y comparte conocimiento.
-              </p>
-
-              <div class="bg-white bg-opacity-10 rounded-4 p-3 mb-3">
-                <h6 class="fw-bold text-warning mb-2">
-                  <i class="bi bi-lightning-charge-fill me-1"></i>Cuentas Demo Precargadas
-                </h6>
-                <p class="small text-white-50 mb-3">
-                  Haz clic en cualquiera de las cuentas de demostración para autocompletar credenciales (Roles <strong>ADMIN</strong> y <strong>USER</strong>):
-                </p>
-                <div class="d-grid gap-2">
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-warning text-dark fw-semibold text-start d-flex justify-content-between align-items-center"
-                    (click)="fillDemo('admin@foro.test', 'Demo1234!')"
-                  >
-                    <span><i class="bi bi-shield-lock-fill me-2"></i>admin&#64;foro.test</span>
-                    <span class="badge bg-dark">ADMIN</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-light text-dark fw-semibold text-start d-flex justify-content-between align-items-center"
-                    (click)="fillDemo('ana@foro.test', 'Demo1234!')"
-                  >
-                    <span><i class="bi bi-person-fill me-2"></i>ana&#64;foro.test (Ana Torres)</span>
-                    <span class="badge bg-primary">USER</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-sm btn-light text-dark fw-semibold text-start d-flex justify-content-between align-items-center"
-                    (click)="fillDemo('luis@foro.test', 'Demo1234!')"
-                  >
-                    <span><i class="bi bi-person-fill me-2"></i>luis&#64;foro.test (Luis Morales)</span>
-                    <span class="badge bg-primary">USER</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="small text-white-50 pt-3 border-top border-white border-opacity-10">
-              <i class="bi bi-info-circle me-1"></i>
-              Clave demo compatible con <code>Demo1234!</code> y <code>Demo1234</code>.
-            </div>
-          </div>
-        </div>
-
-        <!-- Columna formulario (Grid 12: 12 en móvil, 8 en tablet, 6 en desktop) -->
-        <div class="col-12 col-md-10 col-lg-6 d-flex">
+        <!-- Columna formulario centrada -->
+        <div class="col-12 col-md-8 col-lg-5 d-flex">
           <div class="card-forum p-4 p-xl-5 w-100">
             <div class="mb-4">
               <h3 class="fw-bold mb-1">Iniciar Sesión</h3>
@@ -189,9 +134,7 @@ export class LoginComponent {
   });
 
   fillDemo(email: string, password: string): void {
-    this.errorMessage = '';
-    this.loginForm.patchValue({ email, password });
-    this.loginForm.markAllAsTouched();
+    // Función deshabilitada - Cuentas demo precargadas removidas
   }
 
   isFieldInvalid(field: string): boolean {
@@ -204,7 +147,7 @@ export class LoginComponent {
     return !!(control && control.valid && (control.dirty || control.touched));
   }
 
-  onSubmit(): void {
+  async onSubmit(): Promise<void> {
     this.submitted = true;
     this.errorMessage = '';
 
@@ -214,7 +157,7 @@ export class LoginComponent {
     }
 
     const { email, password } = this.loginForm.getRawValue();
-    const res = this.store.login(email, password);
+    const res = await this.store.loginWithApi(email, password);
     if (!res.ok) {
       this.errorMessage = res.message;
       return;

@@ -67,6 +67,18 @@ import { ForumStoreService } from '../../core/services/forum-store.service';
           </ul>
 
           <div class="d-flex flex-column flex-lg-row align-items-stretch align-items-lg-center gap-2 mt-2 mt-lg-0">
+            <button
+              type="button"
+              class="btn btn-sm rounded-pill px-2 py-1 d-inline-flex align-items-center justify-content-center gap-1"
+              [ngClass]="(backendConnected$ | async) ? 'btn-success' : 'btn-outline-light'"
+              (click)="onSyncBackend()"
+              title="Haz clic para sincronizar con users-service (:8081) y forum-service (:8082)"
+              style="font-size: 0.75rem;"
+            >
+              <i class="bi" [ngClass]="(backendConnected$ | async) ? 'bi-cloud-check-fill' : 'bi-hdd-stack'"></i>
+              <span>{{ (backendConnected$ | async) ? 'API Conectada (:8081/:8082)' : 'Modo Colección Local' }}</span>
+            </button>
+
             <ng-container *ngIf="currentUser$ | async as user; else guestButtons">
               <a
                 routerLink="/perfil"
@@ -109,6 +121,11 @@ export class NavbarComponent {
   private readonly router = inject(Router);
 
   readonly currentUser$ = this.store.currentUser$;
+  readonly backendConnected$ = this.store.backendConnected$;
+
+  onSyncBackend(): void {
+    this.store.syncWithBackend();
+  }
 
   onLogout(): void {
     this.store.logout();
